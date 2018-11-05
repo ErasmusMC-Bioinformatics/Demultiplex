@@ -10,7 +10,6 @@ from Bio import SeqIO
 from Bio.Alphabet import generic_dna
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from fuzzywuzzy import process
 
 
 def read_fastq(fastq_path):
@@ -60,10 +59,6 @@ def search_barcodes_in_sequence(barcode_datas, sequence):
 
 
 def main():
-    logging.basicConfig(filename="./log.html", level=logging.INFO, format="%(asctime)s:&emsp;%(message)s <br />", datefmt='%Y/%m/%d %H:%M:%S')
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-    logging.info("Started demultiplexing")
-
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", help="The input file")
     parser.add_argument("-f", "--format", help="The format of the input file (fastq/fasta)", default="auto", choices=["fasta", "fastq", "auto"])
@@ -94,7 +89,14 @@ def main():
     with open(args.mapping_file, newline="") as handle:
         ID_barcode_mapping = list(csv.DictReader(handle, fieldnames=['ID', 'barcode'], delimiter="\t"))
 
-    logging.getLogger().setLevel(logging.INFO)
+    log_file_path = os.path.join(output_dir, "log.html")
+    logging.basicConfig(
+        filename=log_file_path,
+        level=logging.INFO,
+        format="%(asctime)s:&emsp;%(message)s <br />",
+        datefmt='%Y/%m/%d %H:%M:%S'
+    )
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
     logging.info("Input:   {0}".format(input_file_path))
     logging.info("Format:  {0}".format(input_format))
