@@ -10,6 +10,7 @@ from Bio import SeqIO
 from Bio.Alphabet import generic_dna
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
+from fuzzywuzzy import fuzz
 
 
 def read_fastq(fastq_path):
@@ -58,18 +59,28 @@ def search_barcodes_in_sequence(barcode_datas, sequence):
     return -1, None, None
 
 
+def get_sliding_window_generator(sequence, window_size):
+    if type(sequence) is Seq:
+        sequence = str(sequence)
+    elif type(sequence) is SeqRecord:
+        sequence = str(sequence.seq)
+    return ((i, sequence[i:i + window_size]) for i in range(0, len(sequence) - window_size + 1))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", help="The input file")
     parser.add_argument("-f", "--format", help="The format of the input file (fastq/fasta)", default="auto", choices=["fasta", "fastq", "auto"])
     parser.add_argument("-o", "--output-dir", help="The output dir")
     parser.add_argument("-m", "--mapping-file", help="A tab seperated file containing two columns, ID and barcode (no header)")
+    parser.add_argument("-l", "--try-fuzzy", help="Try to 'fuzzy' match the barcodes that don't exactly match any barcode (SLOW!)", action='store_true')
 
     args = parser.parse_args()
 
     input_file_path = args.input
     basename_input_file_path = os.path.basename(input_file_path)
     input_basename_no_ext, input_extension = os.path.splitext(basename_input_file_path)
+    try_fuzzy = args.try_fuzzy
 
     input_format = args.format
 
@@ -89,14 +100,7 @@ def main():
     with open(args.mapping_file, newline="") as handle:
         ID_barcode_mapping = list(csv.DictReader(handle, fieldnames=['ID', 'barcode'], delimiter="\t"))
 
-    log_file_path = os.path.join(output_dir, "log.html")
-    logging.basicConfig(
-        filename=log_file_path,
-        level=logging.INFO,
-        format="%(asctime)s:&emsp;%(message)s <br />",
-        datefmt='%Y/%m/%d %H:%M:%S'
-    )
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
     logging.info("Input:   {0}".format(input_file_path))
     logging.info("Format:  {0}".format(input_format))
@@ -113,11 +117,12 @@ def main():
 
     barcode_data_dict = defaultdict(list)
     ID_file_handle_dict = {}
+    barcode_sizes = []
 
     for ID_barcode in ID_barcode_mapping:
         ID = ID_barcode["ID"]
         barcode = ID_barcode["barcode"]
-
+        barcode_sizes.append(len(barcode))
         output_file_path = os.path.join(
             output_dir,
             "{0}_{1}.{2}".format(input_basename_no_ext, ID, input_format)
@@ -137,6 +142,8 @@ def main():
             output_file_handle=ID_file_handle
         )]
 
+    barcode_max_size = max(barcode_sizes)
+
     discarded_output_file_path = os.path.join(
         output_dir,
         "{0}_{1}.{2}".format(basename_input_file_path, "discarded", input_format)
@@ -144,6 +151,8 @@ def main():
 
     total_sequences = 0
     sequences_assigned_by_id = defaultdict(int)
+
+    discarded_ids = set()
 
     with open(input_file_path, 'rU') as input_file_handle, open(discarded_output_file_path, 'w') as discarded_output_handle:
         for record in SeqIO.parse(input_file_handle, input_format):
@@ -158,15 +167,40 @@ def main():
                 logging.debug(" " * barcode_position + barcode)
                 SeqIO.write(record, ID_file_handle_dict[ID], input_format)
                 break
-            else:  # no match # TODO fuzzy match ?
+            else:  # no match
                 SeqIO.write(record, discarded_output_handle, input_format)
-            if total_sequences % 10000 == 0:
+                if try_fuzzy:
+                    discarded_ids.add(record.id)
+            if total_sequences % 1000 == 0:
                 assigned_sequences = sum(sequences_assigned_by_id.values())
                 logging.info("Processed {0} sequences, assigned {1} ({2}%)".format(
                     total_sequences,
                     assigned_sequences,
                     round(assigned_sequences / total_sequences * 100)
                 ))
+                break
+
+    if try_fuzzy:
+        with open(input_file_path, 'rU') as input_file_handle:
+            for record in SeqIO.parse(input_file_handle, input_format):
+                if record.id not in discarded_ids:
+                    continue
+                print(record.id)
+                for ID, barcode_datas in barcode_data_dict.items():
+                    for barcode_data in barcode_datas:
+                        ratios = [
+                            (
+                                i,
+                                seq_window,
+                                fuzz.partial_ratio(barcode_data.barcode, seq_window)
+                            ) for i, seq_window in get_sliding_window_generator(record, barcode_max_size)]
+                        ratio = max(ratios, key=lambda x: x[2])
+
+                        if ratio[2] > 80:
+                            print(ID)
+                            print(ratio)
+                            logging.info(str(record.seq))
+                            logging.info(" " * ratio[0] + barcode_data.barcode)
 
     for file_handle in ID_file_handle_dict.values():
         file_handle.close()
